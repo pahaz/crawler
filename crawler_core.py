@@ -14,10 +14,10 @@ class TaskWorker(threading.Thread):
 
         self.task_queue = task_queue
         self.work_done_counter = 0
-        self.wait_get_time = 0.0
-        self.wait_put_time = 0.0
+        self.getting_work_time = 0.0
+        self.working_with_result_time = 0.0
         self.working_time = 0.0
-        self.all_live_time = 0.0
+        self.full_working_time = 0.0
         self.is_debug = is_debug
         self.stop_event = stop_event
         self.index = index
@@ -43,28 +43,34 @@ class TaskWorker(threading.Thread):
                 self.log("{t:0.5f} [{i}] get work and start working"
                          .format(i=self.index, t=t2))
 
-                new_tasks = self.do_work(task)
+                result = self.do_work(task)
 
                 self.task_queue.done()
 
                 t3 = time.time()
 
-                self.log("{t:0.5f} [{i}] finish work and want put new works"
+                self.log("{t:0.5f} [{i}] work completed (done); start "
+                         "do_something_with_work_result()"
                          .format(i=self.index, t=t3))
                 self.work_done_counter += 1
 
                 # ** WARNING ** it may be deadlock.
-                # When all workers try add new task in full queue.
-                # (0 workers do work, all do put)
-                # You can do push in other thread or use infinity queue ..
-                self.push_new_tasks(new_tasks)
+                # Case: `result` is new tasks and `task_queue` has max_size!
+                #       When all workers try add new task in full queue they
+                #       must wait when queue is free.
+                #       (0 workers do work, all do push)
+                # HFix: You can do push in other thread or use infinity
+                #       queue ..
+                self.do_something_with_work_result(result)
 
                 t4 = time.time()
 
-                self.log("{t:0.5f} [{i}] put ".format(i=self.index, t=t4))
-                self.wait_get_time += t2 - t1
+                self.log("{t:0.5f} [{i}] do_something_with_work_result "
+                         "completed"
+                         .format(i=self.index, t=t4))
+                self.getting_work_time += t2 - t1
                 self.working_time += t3 - t2
-                self.wait_put_time += t4 - t3
+                self.working_with_result_time += t4 - t3
         except TaskQueueMaxPop:
             self.log("{t:0.5f} [{i}] max pop queue"
                      .format(i=self.index, t=time.time()))
@@ -76,7 +82,7 @@ class TaskWorker(threading.Thread):
                      .format(repr(e), tb, i=self.index, t=time.time()))
         finally:
             end_t = time.time()
-            self.all_live_time = end_t - start_t
+            self.full_working_time = end_t - start_t
             self.log("{t:0.5f} [{i}] stop"
                      .format(i=self.index, t=end_t))
 
@@ -87,16 +93,33 @@ class TaskWorker(threading.Thread):
     def do_work(self, task):
         """
         Do main work
-        :param task: task object
-        :return: list of new tasks
+
+        Example:
+
+            def do_work(self, task):
+                time.sleep(0.100)
+                return [task, task]
+
+        :param task: queue task object
+        :return: result (it may be new task list) used for
+        `do_something_with_work_result` function
         """
         time.sleep(0.100)
         return [task, task]
 
-    def push_new_tasks(self, new_tasks):
-        # May be deadlock!
+    def do_something_with_work_result(self, result):
+        """
+        Do other work with `do_work` result
+
+        :param result:
+        :return:
+        """
+        if not result:
+            return
+
         try:
-            for new_task in new_tasks:
+            for new_task in result:
+                # May be deadlock warning!
                 self.task_queue.push_back(new_task)
         except TaskQueueMaxPush:
             pass

@@ -1,3 +1,4 @@
+from html.parser import HTMLParser
 import os
 import threading
 import argparse
@@ -6,29 +7,13 @@ import time
 from crawler_core import TaskWorker, TaskQueue
 import urllib.request
 import urllib.parse
+from crawler_util import save_binary_data_to_file, get_links, \
+    UrlThreadSafeStore
 
 
 __author__ = 'pahaz'
 STAT_OUT = '[{i}] downloads: {dc} pop:{gt:0.5f} put:{pt:0.5f} work:{wt:0.5f}' \
            ' = {lt:0.5f}'
-
-
-def save_binary_data_to_file(path, data):
-    with open(path, 'wb') as f:
-        f.write(data)
-
-
-class Urls(object):
-    def __init__(self):
-        self._store = set()
-        self._lock = threading.Lock()
-
-    def check_and_add(self, obj):
-        self._lock.acquire()
-        has = obj in self._store
-        self._store.add(obj)
-        self._lock.release()
-        return has
 
 
 class Downloader(TaskWorker):
@@ -45,7 +30,6 @@ class Downloader(TaskWorker):
 
     def do_work(self, task):
         url, depth = task
-        print(depth, self.max_depth)
         if depth > self.max_depth:
             return []
 
@@ -53,24 +37,72 @@ class Downloader(TaskWorker):
         if is_visited:
             return []
 
+        tx1 = tx2 = tx3 = t0 = time.time()
+        self.log("{t:0.5f} [{i}] START. URL {0}"
+                 .format(url, i=self.index, t=t0))
         try:
-            u_open = urllib.request.urlopen(url)
-            u_data = u_open.read()
-        except (URLError, ValueError) as e:
-            self.log("[{i}] Bead url {0} - {1}"
-                     .format(url, repr(e), i=self.index))
-            return []
+            b_data, b_head, headers = self.do_request(url)
 
-        url_parsed = urllib.parse.urlparse(url)
-        f_path = self.make_file_path(url)
-        save_binary_data_to_file(f_path, u_data)
+            tx1 = time.time()
 
-        return []
+            f_data_path = self.get_file_data_path(url)
+            self.do_save_file_data(url, f_data_path, b_data)
 
-    def make_file_path(self, url):
-        file_name = urllib.parse.quote(url, safe='')
+            f_head_path = self.get_file_head_path(url)
+            self.do_save_file_data(url, f_head_path, b_head)
+
+            tx2 = time.time()
+
+            urls = get_links(url, headers, b_data)
+
+            tx3 = time.time()
+
+            if self.max_depth <= depth + 1:
+                return []
+            return [(u, depth + 1) for u in urls]
+        except Exception as e:
+            self.log("[{i}] PROBLEM with URL {0} : {e}"
+                     .format(url, e=repr(e), i=self.index))
+        finally:
+            t1 = time.time()
+            dt = (t1 - t0) * 1000.0
+            t_request = (tx1 - t0) * 1000.0
+            t_save = (tx2 - tx1) * 1000.0
+            t_parse = (tx3 - tx2) * 1000.0
+            self.log("{t:0.5f} [{i}] STOP. WORKING {dt:0.0f}ms "
+                     "[REQUEST: {1:0.0f}ms SAVE: {2:0.0f}ms PARSE: {3:0.0f}ms]"
+                     " WITH URL {0}"
+                     .format(url, t_request, t_save, t_parse, i=self.index,
+                             t=t1, dt=dt))
+
+    def get_file_data_path(self, url):
+        file_name = urllib.parse.quote(url, safe='') + '.html'
         file_path = os.path.join(self.download_dir, file_name)
         return file_path
+
+    def get_file_head_path(self, url):
+        return self.get_file_data_path(url) + '.header.txt'
+
+    def do_save_file_data(self, url, file_path, b_data):
+        try:
+            save_binary_data_to_file(file_path, b_data)
+        except OSError as e:
+            self.log("[{i}] File save error from url {1} (name {0}) : {e}"
+                     .format(file_path, url, e=repr(e), i=self.index))
+            raise
+
+    def do_request(self, url):
+        try:
+            u_open = urllib.request.urlopen(url)
+            headers = [(h.lower(), v) for h, v in u_open.getheaders()]
+            b_data = u_open.read()
+        except Exception as e:
+            self.log("[{i}] Bead url {0} : {e}"
+                     .format(url, e=repr(e), i=self.index))
+            raise
+
+        b_head = '\n'.join(map(lambda x: x[0] + ': ' + x[1], headers)).encode()
+        return b_data, b_head, headers
 
 
 if __name__ == '__main__':
@@ -97,7 +129,7 @@ if __name__ == '__main__':
 
     # check first url
     # python crawler.py qeqweqwe 2 2 . --debug --thread 3
-    _urls = Urls()
+    _urls = UrlThreadSafeStore()
     _stop = threading.Event()
     _task_queue = TaskQueue(max_queue_size=-1,
                             max_count_of_done_works=args.max_downloads)
@@ -120,6 +152,10 @@ if __name__ == '__main__':
         while True:
             time.sleep(1)
             if _task_queue.finish.is_set():
+                print('WORK FINISHED!')
+                break
+            if all(x._is_stopped for x in _task_workers):
+                print('ALL WORKERS STOPPED!')
                 break
     except KeyboardInterrupt:
         pass
@@ -136,9 +172,9 @@ if __name__ == '__main__':
     for downloader in _task_workers:
         print(STAT_OUT.format(
             i=downloader.index,
-            gt=downloader.wait_get_time,
-            pt=downloader.wait_put_time,
+            gt=downloader.getting_work_time,
+            pt=downloader.working_with_result_time,
             wt=downloader.working_time,
             dc=downloader.work_done_counter,
-            lt=downloader.all_live_time
+            lt=downloader.full_working_time
         ))
