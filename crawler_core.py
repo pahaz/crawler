@@ -77,7 +77,7 @@ class TaskWorker(threading.Thread):
         except Exception as e:
             exc_type, exc_value, exc_traceback = sys.exc_info()
             tb = ''.join(traceback.format_exception(exc_type, exc_value,
-                                                    exc_traceback))
+                                                        exc_traceback))
             self.log("{t:0.5f} [{i}] TERMINATED: {0}: \n{1}"
                      .format(repr(e), tb, i=self.index, t=time.time()))
         finally:
@@ -88,7 +88,10 @@ class TaskWorker(threading.Thread):
 
     def log(self, msg):
         if self.is_debug:
-            print(msg)
+            try:
+                print('!', msg)
+            except UnicodeEncodeError:
+                print("Can write error msg!")
 
     def do_work(self, task):
         """

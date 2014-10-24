@@ -42,24 +42,12 @@ class Downloader(TaskWorker):
                  .format(url, i=self.index, t=t0))
         try:
             b_data, b_head, headers = self.do_request(url)
-
             tx1 = time.time()
 
-            f_data_path = self.get_file_data_path(url)
-            self.do_save_file_data(url, f_data_path, b_data)
-
-            f_head_path = self.get_file_head_path(url)
-            self.do_save_file_data(url, f_head_path, b_head)
-
-            tx2 = time.time()
-
-            urls = get_links(url, headers, b_data)
-
-            tx3 = time.time()
-
             if self.max_depth <= depth + 1:
-                return []
-            return [(u, depth + 1) for u in urls]
+                return None
+            return url, depth, b_data, b_head, headers
+
         except Exception as e:
             self.log("[{i}] PROBLEM with URL {0} : {e}"
                      .format(url, e=repr(e), i=self.index))
@@ -74,6 +62,37 @@ class Downloader(TaskWorker):
                      " WITH URL {0}"
                      .format(url, t_request, t_save, t_parse, i=self.index,
                              t=t1, dt=dt))
+
+    def do_something_with_work_result(self, result):
+        if not result:
+            return
+
+        url, depth, b_data, b_head, headers = result
+        t = threading.Thread(target=self.thread,
+                             args=(url, depth, b_data, b_head, headers))
+        t.start()
+
+    def thread(self, url, depth, b_data, b_head, headers):
+        tx1 = time.time()
+        f_data_path = self.get_file_data_path(url)
+        self.do_save_file_data(url, f_data_path, b_data)
+
+        f_head_path = self.get_file_head_path(url)
+        self.do_save_file_data(url, f_head_path, b_head)
+
+        tx2 = time.time()
+
+        urls = get_links(url, headers, b_data)
+
+        tx3 = time.time()
+
+        t_save = (tx2 - tx1) * 1000.0
+        t_parse = (tx3 - tx2) * 1000.0
+
+        print("PARSING: SAVE: {0:0.0f}ms PARSE: {1:0.0f}ms".format(t_save,
+                                                                   t_parse))
+
+        super().do_something_with_work_result([(u, depth + 1) for u in urls])
 
     def get_file_data_path(self, url):
         file_name = urllib.parse.quote(url, safe='') + '.html'
